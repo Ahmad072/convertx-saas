@@ -12,7 +12,7 @@ const FREE_LIMIT = 3;
 const PRO_PRICE = 8;
 
 // Paddle Configuration
-const PADDLE_CLIENT_TOKEN = 'test_xxxxxxxxxxxxx'; // REPLACE WITH YOUR SANDBOX CLIENT TOKEN
+const PADDLE_CLIENT_TOKEN = 'test_79a26ec311dd32a43c53d788bc0'; // REPLACE WITH YOUR SANDBOX CLIENT TOKEN
 const PADDLE_ENVIRONMENT = 'sandbox'; // Change to 'production' for live
 
 // ═══════════════════════════════════════════════════════
@@ -186,7 +186,7 @@ function App() {
       window.Paddle.Checkout.open({
         items: [
           {
-            priceId: 'pri_xxxxxxxxxxxxx', // REPLACE WITH YOUR SANDBOX PRICE ID
+            priceId: 'pro_01kpzkmw1grg3ymr7hypwnj155', // REPLACE WITH YOUR SANDBOX PRICE ID
             quantity: 1
           }
         ],
