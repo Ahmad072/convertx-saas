@@ -4,12 +4,53 @@ import axios from 'axios';
 import './App.css';
 
 // ═══════════════════════════════════════════════════════
-// CONFIGURATION - Change this to your Render backend URL
+// CONFIGURATION
 // ═══════════════════════════════════════════════════════
-const API_URL = 'https://convertx-saas.onrender.com';
+const API_URL = 'https://convertx-api.onrender.com'; // Your Render backend URL
 const APP_NAME = 'ConvertX';
 const FREE_LIMIT = 3;
 const PRO_PRICE = 8;
+
+// Paddle Configuration
+const PADDLE_CLIENT_TOKEN = 'test_xxxxxxxxxxxxx'; // REPLACE WITH YOUR SANDBOX CLIENT TOKEN
+const PADDLE_ENVIRONMENT = 'sandbox'; // Change to 'production' for live
+
+// ═══════════════════════════════════════════════════════
+// Initialize Paddle
+// ═══════════════════════════════════════════════════════
+if (window.Paddle) {
+  window.Paddle.Environment.set(PADDLE_ENVIRONMENT);
+  window.Paddle.Initialize({
+    token: PADDLE_CLIENT_TOKEN,
+    checkout: {
+      settings: {
+        displayMode: "overlay",
+        theme: "light",
+        locale: "en",
+        allowLogout: false
+      }
+    },
+    eventCallback: function(data) {
+      console.log("Paddle Event:", data.name, data);
+      
+      // Handle checkout events
+      if (data.name === "checkout.completed") {
+        console.log("✅ Payment successful!");
+        // The webhook will update the database
+        // Refresh user data after a delay
+        setTimeout(() => {
+          window.location.reload();
+        }, 3000);
+      }
+      if (data.name === "checkout.error") {
+        console.error("❌ Payment error:", data);
+      }
+      if (data.name === "checkout.closed") {
+        console.log("Checkout closed by user");
+      }
+    }
+  });
+}
 
 // ═══════════════════════════════════════════════════════
 // MAIN APP COMPONENT
@@ -17,7 +58,7 @@ const PRO_PRICE = 8;
 function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('convertx_token'));
-  const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+  const [authMode, setAuthMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -26,8 +67,22 @@ function App() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showPricing, setShowPricing] = useState(false);
+  const [paddleReady, setPaddleReady] = useState(false);
 
-  // Load user data on token change
+  // Check if Paddle is loaded
+  useEffect(() => {
+    const checkPaddle = setInterval(() => {
+      if (window.Paddle) {
+        setPaddleReady(true);
+        clearInterval(checkPaddle);
+        console.log("✅ Paddle.js loaded successfully");
+      }
+    }, 1000);
+    
+    return () => clearInterval(checkPaddle);
+  }, []);
+
+  // Load user data
   useEffect(() => {
     if (token) {
       fetchUserProfile();
@@ -89,7 +144,6 @@ function App() {
       setUser(res.data.user);
       setMessage({ type: 'success', text: `Welcome to ${APP_NAME}, ${res.data.user.name}!` });
       
-      // Clear form
       setEmail('');
       setPassword('');
       setName('');
@@ -111,22 +165,51 @@ function App() {
     setShowPricing(false);
   };
 
+  // ═══════════════════════════════════════════════════
+  // PADDLE CHECKOUT - DIRECT INTEGRATION
+  // ═══════════════════════════════════════════════════
+
   const handleUpgrade = async () => {
-    try {
-      setLoading(true);
-      const res = await axios.post(
-        `${API_URL}/api/payment/create-checkout`,
-        {},
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      
-      if (res.data.checkoutUrl) {
-        window.location.href = res.data.checkoutUrl;
-      }
-    } catch (error) {
+    if (!paddleReady) {
       setMessage({ 
         type: 'error', 
-        text: 'Failed to start checkout. Please try again.' 
+        text: 'Payment system is loading. Please wait a moment and try again.' 
+      });
+      return;
+    }
+
+    try {
+      setLoading(true);
+      console.log("🚀 Opening Paddle checkout...");
+      
+      // Open Paddle checkout directly
+      window.Paddle.Checkout.open({
+        items: [
+          {
+            priceId: 'pri_xxxxxxxxxxxxx', // REPLACE WITH YOUR SANDBOX PRICE ID
+            quantity: 1
+          }
+        ],
+        customer: {
+          email: user?.email || '',
+        },
+        customData: {
+          userId: user?.id || ''
+        },
+        settings: {
+          displayMode: 'overlay',
+          theme: 'light',
+          locale: 'en',
+          successUrl: window.location.href,
+          closeUrl: window.location.href
+        }
+      });
+      
+    } catch (error) {
+      console.error('Paddle error:', error);
+      setMessage({ 
+        type: 'error', 
+        text: 'Failed to open checkout. Please try again.' 
       });
     } finally {
       setLoading(false);
@@ -176,7 +259,6 @@ function App() {
 
     const file = acceptedFiles[0];
     
-    // Check if user has remaining conversions
     if (user && user.remainingConversions <= 0) {
       setMessage({
         type: 'upgrade',
@@ -204,7 +286,6 @@ function App() {
       fetchUserProfile();
       fetchHistory();
 
-      // Auto-download the converted file
       if (res.data.convertedFileName) {
         setTimeout(() => downloadFile(res.data.convertedFileName), 500);
       }
@@ -382,9 +463,8 @@ function App() {
       {/* Main Content */}
       <main className="main-content">
         <div className="content-grid">
-          {/* Left Column - Upload & Convert */}
+          {/* Left Column */}
           <div className="column-main">
-            {/* Upgrade Alert */}
             {user?.plan === 'free' && user?.remainingConversions <= 1 && (
               <div className="upgrade-alert">
                 <div className="alert-content">
@@ -401,7 +481,6 @@ function App() {
               </div>
             )}
 
-            {/* File Drop Zone */}
             <div className="upload-section">
               <h2 className="section-title">Convert File to PDF</h2>
               
@@ -436,7 +515,6 @@ function App() {
               </div>
             </div>
 
-            {/* Message Display */}
             {message && (
               <div className={`message message-${message.type}`}>
                 {message.type === 'upgrade' && (
@@ -448,7 +526,6 @@ function App() {
               </div>
             )}
 
-            {/* Conversion History */}
             <div className="history-section">
               <h2 className="section-title">Recent Conversions</h2>
               
@@ -466,30 +543,15 @@ function App() {
                         <p className="file-name">{file.original_name}</p>
                         <p className="file-meta">
                           {new Date(file.converted_at).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
+                            month: 'short', day: 'numeric', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit'
                           })}
                           {file.file_size && ` • ${(file.file_size / 1024).toFixed(1)} KB`}
                         </p>
                       </div>
                       <div className="file-actions">
-                        <button 
-                          onClick={() => downloadFile(file.converted_path)}
-                          className="btn-icon"
-                          title="Download"
-                        >
-                          ⬇️
-                        </button>
-                        <button 
-                          onClick={() => deleteFile(file.converted_path)}
-                          className="btn-icon"
-                          title="Delete"
-                        >
-                          🗑️
-                        </button>
+                        <button onClick={() => downloadFile(file.converted_path)} className="btn-icon" title="Download">⬇️</button>
+                        <button onClick={() => deleteFile(file.converted_path)} className="btn-icon" title="Delete">🗑️</button>
                       </div>
                     </div>
                   ))}
@@ -498,9 +560,8 @@ function App() {
             </div>
           </div>
 
-          {/* Right Column - Subscription Info */}
+          {/* Right Column */}
           <div className="column-side">
-            {/* Current Plan Card */}
             <div className="plan-card">
               <h3 className="plan-card-title">Your Plan</h3>
               
@@ -527,30 +588,22 @@ function App() {
                   <span>Multiple formats supported</span>
                 </div>
                 <div className="feature-item">
-                  <span className="feature-icon">
-                    {user?.plan === 'pro' ? '✓' : '—'}
-                  </span>
+                  <span className="feature-icon">{user?.plan === 'pro' ? '✓' : '—'}</span>
                   <span>Priority processing</span>
                 </div>
                 <div className="feature-item">
-                  <span className="feature-icon">
-                    {user?.plan === 'pro' ? '✓' : '—'}
-                  </span>
+                  <span className="feature-icon">{user?.plan === 'pro' ? '✓' : '—'}</span>
                   <span>Advanced formatting</span>
                 </div>
               </div>
 
               {user?.plan === 'free' && (
-                <button 
-                  onClick={() => setShowPricing(true)} 
-                  className="btn-upgrade-full"
-                >
+                <button onClick={() => setShowPricing(true)} className="btn-upgrade-full">
                   Upgrade to Pro - ${PRO_PRICE}/month
                 </button>
               )}
             </div>
 
-            {/* Why Upgrade Card */}
             {user?.plan === 'free' && (
               <div className="why-upgrade-card">
                 <h3>Why Go Pro?</h3>
@@ -576,6 +629,11 @@ function App() {
             <div className="pricing-header">
               <h2>Upgrade to {APP_NAME} Pro</h2>
               <p>Get unlimited file conversions and premium features</p>
+              {!paddleReady && (
+                <p style={{color: 'orange', marginTop: '10px'}}>
+                  ⚠️ Payment system is loading...
+                </p>
+              )}
             </div>
 
             <div className="pricing-grid">
@@ -608,9 +666,9 @@ function App() {
                 <button 
                   onClick={handleUpgrade} 
                   className="btn-primary"
-                  disabled={loading}
+                  disabled={loading || !paddleReady}
                 >
-                  {loading ? 'Redirecting...' : 'Upgrade Now'}
+                  {loading ? 'Opening...' : !paddleReady ? 'Loading Payment...' : 'Upgrade Now'}
                 </button>
                 <p className="secure-note">🔒 Secure payment powered by Paddle</p>
               </div>
@@ -619,7 +677,6 @@ function App() {
         </div>
       )}
 
-      {/* Footer */}
       <footer className="footer">
         <p>&copy; 2024 {APP_NAME}. All rights reserved.</p>
         <p className="footer-tagline">Convert any file to PDF, instantly.</p>
