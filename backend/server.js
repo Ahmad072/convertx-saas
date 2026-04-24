@@ -283,45 +283,75 @@ app.get('/api/payment/subscription', auth, async (req, res) => {
 });
 
 // Paddle webhook
-app.post('/api/payment/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+app.post('/api/payment/webhook', async (req, res) => {
   try {
-    const event = JSON.parse(req.body.toString());
-    console.log('📥 Webhook received:', event.eventType);
+    let event;
+    
+    // Handle raw body
+    if (typeof req.body === 'string') {
+      event = JSON.parse(req.body);
+    } else {
+      event = req.body;
+    }
+    
+    console.log('📥 Webhook received:', event?.eventType || 'unknown');
+    
+    if (!event || !event.eventType) {
+      console.error('Invalid webhook payload:', event);
+      return res.status(400).json({ error: 'Invalid payload' });
+    }
     
     switch (event.eventType) {
       case 'transaction.completed': {
-        const userId = event.data.customData?.userId;
-        if (!userId) break;
+        const userId = event.data?.customData?.userId;
+        const customerId = event.data?.customerId;
         
-        await supabase
+        console.log('💰 Transaction completed for user:', userId);
+        
+        if (!userId) {
+          console.error('No userId in webhook data');
+          break;
+        }
+        
+        // Update user to Pro in Supabase
+        const { data, error } = await supabase
           .from('users')
           .update({
             plan: 'pro',
-            max_conversions: PRO_TIER_LIMIT,
+            max_conversions: 1000,
             subscription_status: 'active',
-            paddle_customer_id: event.data.customerId,
-            subscription_id: event.data.subscriptionId,
+            paddle_customer_id: customerId,
+            subscription_id: event.data?.subscriptionId,
             updated_at: new Date().toISOString()
           })
-          .eq('id', userId);
+          .eq('id', userId)
+          .select();
         
-        console.log('✅ User upgraded to Pro:', userId);
+        if (error) {
+          console.error('❌ Database update error:', error);
+        } else {
+          console.log('✅ User upgraded to Pro:', userId);
+        }
         break;
       }
       
       case 'subscription.canceled': {
-        const customerId = event.data.customerId;
-        await supabase
+        const customerId = event.data?.customerId;
+        console.log('❌ Subscription canceled for:', customerId);
+        
+        const { error } = await supabase
           .from('users')
           .update({
             plan: 'free',
-            max_conversions: FREE_TIER_LIMIT,
+            max_conversions: 3,
             subscription_status: 'inactive',
             updated_at: new Date().toISOString()
           })
           .eq('paddle_customer_id', customerId);
         
-        console.log('❌ Subscription canceled for customer:', customerId);
+        if (error) {
+          console.error('Cancel update error:', error);
+        }
         break;
       }
     }
@@ -332,7 +362,6 @@ app.post('/api/payment/webhook', express.raw({ type: 'application/json' }), asyn
     res.status(500).json({ error: 'Webhook processing failed' });
   }
 });
-
 // ─── FILE CONVERSION ROUTES ────────────────────────────
 
 // Convert file to PDF
