@@ -1,33 +1,33 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
 import './App.css';
 
 // ═══════════════════════════════════════════════════════
-// CONFIGURATION
-// ═══════════════════════════════════════════════════════
-const API_URL = 'https://convertx-saas.onrender.com/'; // CHANGE THIS TO YOUR REAL RENDER URL
+const API_URL = 'https://convertx-api.onrender.com'; // CHANGE THIS
 const APP_NAME = 'ConvertX';
-const FREE_LIMIT = 3;
-const PRO_PRICE = 8;
+const DAILY_LIMIT = 20;
 
-// ═══════════════════════════════════════════════════════
-// MAIN APP COMPONENT
 // ═══════════════════════════════════════════════════════
 function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('convertx_token'));
-  const [authMode, setAuthMode] = useState('login');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
   const [converting, setConverting] = useState(false);
   const [message, setMessage] = useState(null);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [showPricing, setShowPricing] = useState(false);
+  
+  // Auth states
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authStep, setAuthStep] = useState('email'); // 'email' | 'otp'
+  const [email, setEmail] = useState('');
+  const [otp, setOtp] = useState('');
+  const [pendingDownload, setPendingDownload] = useState(null);
+  const [remainingToday, setRemainingToday] = useState(DAILY_LIMIT);
+  
+  // OTP input refs
+  const otpInputRefs = useRef([]);
 
-  // Load user data when token changes
   useEffect(() => {
     if (token) {
       fetchUserProfile();
@@ -35,10 +35,9 @@ function App() {
     }
   }, [token]);
 
-  // Auto-dismiss messages after 5 seconds
   useEffect(() => {
     if (message) {
-      const timer = setTimeout(() => setMessage(null), 5000);
+      const timer = setTimeout(() => setMessage(null), 6000);
       return () => clearTimeout(timer);
     }
   }, [message]);
@@ -53,12 +52,9 @@ function App() {
         headers: { Authorization: `Bearer ${token}` }
       });
       setUser(res.data);
-      console.log('✅ User profile loaded:', res.data);
+      setRemainingToday(res.data.remainingToday);
     } catch (error) {
-      console.error('Profile error:', error);
-      if (error.response?.status === 401) {
-        logout();
-      }
+      if (error.response?.status === 401) logout();
     }
   };
 
@@ -73,70 +69,125 @@ function App() {
     }
   };
 
-  const handleAuth = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setMessage(null);
-
-    try {
-      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
-      const payload = authMode === 'login' 
-        ? { email, password }
-        : { email, password, name };
-
-      console.log('🔗 Connecting to:', `${API_URL}${endpoint}`);
-      
-      const res = await axios.post(`${API_URL}${endpoint}`, payload, {
-        timeout: 15000 // 15 second timeout
-      });
-      
-      console.log('✅ Auth successful:', res.data);
-      
-      localStorage.setItem('convertx_token', res.data.token);
-      setToken(res.data.token);
-      setUser(res.data.user);
-      setMessage({ type: 'success', text: `Welcome to ${APP_NAME}, ${res.data.user.name || 'User'}!` });
-      
-      setEmail('');
-      setPassword('');
-      setName('');
-    } catch (error) {
-      console.error('❌ Auth error:', error);
-      
-      if (error.code === 'ECONNABORTED') {
-        setMessage({ 
-          type: 'error', 
-          text: 'Server is waking up. Please wait 30 seconds and try again.' 
-        });
-      } else if (!error.response) {
-        setMessage({ 
-          type: 'error', 
-          text: 'Cannot connect to server. Please check your internet and try again.' 
-        });
-      } else {
-        setMessage({ 
-          type: 'error', 
-          text: error.response?.data?.error || 'Something went wrong. Please try again.' 
-        });
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const logout = () => {
     localStorage.removeItem('convertx_token');
     setToken(null);
     setUser(null);
     setHistory([]);
-    setShowPricing(false);
+    setRemainingToday(DAILY_LIMIT);
+    setShowAuthModal(false);
+  };
+
+  // ═══════════════════════════════════════════════════
+  // OTP AUTH FUNCTIONS
+  // ═══════════════════════════════════════════════════
+
+  const handleSendOTP = async (e) => {
+    e?.preventDefault();
+    if (!email || !email.includes('@')) {
+      setMessage({ type: 'error', text: 'Please enter a valid email address' });
+      return;
+    }
+
+    setLoading(true);
+    setMessage(null);
+
+    try {
+      await axios.post(`${API_URL}/api/auth/send-otp`, { email });
+      setAuthStep('otp');
+      setMessage({ type: 'success', text: `Verification code sent to ${email}` });
+      // Focus first OTP input
+      setTimeout(() => otpInputRefs.current[0]?.focus(), 300);
+    } catch (error) {
+      setMessage({ 
+        type: 'error', 
+        text: error.response?.data?.error || 'Failed to send code. Please try again.' 
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyOTP = async (e) => {
+    e?.preventDefault();
+    if (otp.length !== 6) {
+      setMessage({ type: 'error', text: 'Please enter the 6-digit code' });
+      return;
+    }
+
+    setLoading(true);
+    setMessage(null);
+
+    try {
+      const res = await axios.post(`${API_URL}/api/auth/verify-otp`, { email, otp });
+      
+      localStorage.setItem('convertx_token', res.data.token);
+      setToken(res.data.token);
+      setUser(res.data.user);
+      setRemainingToday(res.data.user.remainingToday || DAILY_LIMIT);
+      setMessage({ type: 'success', text: '✅ Email verified! Downloading your file...' });
+      
+      // Reset auth state
+      setAuthStep('email');
+      setOtp('');
+      setShowAuthModal(false);
+      
+      // Download pending file if exists
+      if (pendingDownload) {
+        setTimeout(() => downloadFile(pendingDownload, true), 500);
+        setPendingDownload(null);
+      }
+      
+      // Fetch history after login
+      fetchHistory();
+    } catch (error) {
+      setMessage({ 
+        type: 'error', 
+        text: error.response?.data?.error || 'Invalid code. Please try again.' 
+      });
+      setOtp('');
+      otpInputRefs.current[0]?.focus();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOtpChange = (index, value) => {
+    if (value.length > 1) return;
+    
+    const newOtp = otp.split('');
+    newOtp[index] = value;
+    const otpString = newOtp.join('');
+    setOtp(otpString);
+    
+    // Auto-advance to next input
+    if (value && index < 5) {
+      otpInputRefs.current[index + 1]?.focus();
+    }
+    
+    // Auto-submit when all 6 digits entered
+    if (index === 5 && value && otpString.length === 6) {
+      setTimeout(() => handleVerifyOTP(), 200);
+    }
+  };
+
+  const handleOtpKeyDown = (index, e) => {
+    if (e.key === 'Backspace' && !otp[index] && index > 0) {
+      otpInputRefs.current[index - 1]?.focus();
+    }
   };
 
   // ═══════════════════════════════════════════════════
   // FILE OPERATIONS
   // ═══════════════════════════════════════════════════
 
-  const downloadFile = async (filename) => {
+  const downloadFile = async (filename, isPending = false) => {
+    if (!token && !isPending) {
+      setPendingDownload(filename);
+      setShowAuthModal(true);
+      return;
+    }
+
     try {
       const res = await axios.get(`${API_URL}/api/convert/download/${filename}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -153,38 +204,34 @@ function App() {
       window.URL.revokeObjectURL(url);
       
       setMessage({ type: 'success', text: '✅ File downloaded!' });
+      fetchUserProfile();
     } catch (error) {
-      setMessage({ type: 'error', text: 'Download failed.' });
+      setMessage({ type: 'error', text: 'Download failed. Please login and try again.' });
     }
   };
 
   const deleteFile = async (filename) => {
     try {
-      await axios.delete(`${API_URL}/api/convert/delete/${filename}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      // We don't have delete endpoint, just remove from UI
       fetchHistory();
-      setMessage({ type: 'success', text: 'File deleted!' });
+      setMessage({ type: 'success', text: 'File removed from list' });
     } catch (error) {
-      setMessage({ type: 'error', text: 'Delete failed.' });
+      setMessage({ type: 'error', text: 'Failed to remove file.' });
     }
   };
 
   const onDrop = useCallback(async (acceptedFiles) => {
     if (acceptedFiles.length === 0) return;
 
-    const file = acceptedFiles[0];
-    
-    // Check if user has conversions left
-    if (user && user.remainingConversions <= 0) {
+    if (remainingToday <= 0) {
       setMessage({
-        type: 'upgrade',
-        text: 'You\'ve used all your free conversions! Upgrade to Pro for unlimited access.'
+        type: 'error',
+        text: `Daily limit of ${DAILY_LIMIT} conversions reached. Please come back tomorrow!`
       });
-      setShowPricing(true);
       return;
     }
 
+    const file = acceptedFiles[0];
     setConverting(true);
     setMessage(null);
 
@@ -192,28 +239,37 @@ function App() {
     formData.append('file', file);
 
     try {
-      const res = await axios.post(`${API_URL}/api/convert/to-pdf`, formData, {
+      const res = await axios.post(`${API_URL}/api/convert`, formData, {
         headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'multipart/form-data'
+          'Content-Type': 'multipart/form-data',
+          'X-User-Email': user?.email || 'guest'
         }
       });
 
-      setMessage({ type: 'success', text: '✅ File converted successfully!' });
-      fetchUserProfile(); // Refresh user data (conversion count)
-      fetchHistory();
-
-      // Auto download the converted file
+      setMessage({ 
+        type: 'success', 
+        text: '✅ File converted! Sign up to download your PDF.' 
+      });
+      
+      // Trigger download flow
       if (res.data.convertedFileName) {
-        setTimeout(() => downloadFile(res.data.convertedFileName), 500);
+        if (token) {
+          // User is logged in, download immediately
+          setTimeout(() => downloadFile(res.data.convertedFileName), 500);
+        } else {
+          // User needs to sign up
+          setPendingDownload(res.data.convertedFileName);
+          setShowAuthModal(true);
+          setEmail('');
+          setAuthStep('email');
+        }
       }
     } catch (error) {
-      if (error.response?.status === 403) {
+      if (error.response?.status === 429) {
         setMessage({
-          type: 'upgrade',
-          text: 'Monthly limit reached! Upgrade to Pro for unlimited conversions.'
+          type: 'error',
+          text: `Daily limit reached (${DAILY_LIMIT} files/day). Come back tomorrow!`
         });
-        setShowPricing(true);
       } else {
         setMessage({
           type: 'error',
@@ -223,7 +279,7 @@ function App() {
     } finally {
       setConverting(false);
     }
-  }, [token, user]);
+  }, [token, user, remainingToday]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -246,104 +302,7 @@ function App() {
   });
 
   // ═══════════════════════════════════════════════════
-  // LOGIN/REGISTER PAGE
-  // ═══════════════════════════════════════════════════
-
-  if (!token) {
-    return (
-      <div className="auth-container">
-        <div className="auth-card">
-          <div className="auth-header">
-            <div className="app-logo">📄</div>
-            <h1 className="app-title">{APP_NAME}</h1>
-            <p className="app-subtitle">Convert any file to PDF in seconds</p>
-          </div>
-
-          {message && (
-            <div className={`message message-${message.type}`}>
-              {message.text}
-            </div>
-          )}
-
-          <form onSubmit={handleAuth} className="auth-form">
-            <h2 className="auth-mode-title">
-              {authMode === 'login' ? 'Welcome Back' : 'Create Account'}
-            </h2>
-
-            {authMode === 'register' && (
-              <div className="input-group">
-                <label>Name</label>
-                <input
-                  type="text"
-                  placeholder="Your name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  required
-                />
-              </div>
-            )}
-
-            <div className="input-group">
-              <label>Email</label>
-              <input
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-
-            <div className="input-group">
-              <label>Password</label>
-              <input
-                type="password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength="6"
-              />
-            </div>
-
-            <button type="submit" className="btn-primary" disabled={loading}>
-              {loading ? 'Please wait...' : authMode === 'login' ? 'Sign In' : 'Create Account'}
-            </button>
-          </form>
-
-          <div className="auth-switch">
-            {authMode === 'login' ? (
-              <p>Don't have an account?{' '}
-                <button onClick={() => { setAuthMode('register'); setMessage(null); }}>
-                  Sign Up
-                </button>
-              </p>
-            ) : (
-              <p>Already have an account?{' '}
-                <button onClick={() => { setAuthMode('login'); setMessage(null); }}>
-                  Sign In
-                </button>
-              </p>
-            )}
-          </div>
-
-          <div className="auth-footer">
-            <div className="pricing-preview">
-              <span className="free-badge">Free</span>
-              <span>{FREE_LIMIT} conversions/month</span>
-            </div>
-            <div className="pricing-preview">
-              <span className="pro-badge">Pro</span>
-              <span>Unlimited • ${PRO_PRICE}/month</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ═══════════════════════════════════════════════════
-  // DASHBOARD
+  // RENDER
   // ═══════════════════════════════════════════════════
 
   return (
@@ -353,64 +312,61 @@ function App() {
         <div className="nav-brand">
           <span className="nav-logo">📄</span>
           <span className="nav-title">{APP_NAME}</span>
+          <span className="nav-badge">FREE</span>
         </div>
         
         <div className="nav-user">
-          <div className="user-info">
-            <span className="user-plan-badge">{user?.plan || 'free'}</span>
-            <span className="user-name">{user?.name}</span>
-          </div>
-          
-          <div className="conversion-counter">
-            <div className="counter-bar">
-              <div 
-                className="counter-fill"
-                style={{ 
-                  width: `${((user?.conversionsUsed || 0) / (user?.maxConversions || 1)) * 100}%`,
-                  backgroundColor: (user?.remainingConversions || 0) <= 1 ? '#EF4444' : '#4A90E2'
-                }}
-              />
+          {user ? (
+            <>
+              <div className="user-info">
+                <span className="user-email">{user.email}</span>
+                <span className="user-plan-badge">
+                  {remainingToday} / {DAILY_LIMIT}
+                </span>
+              </div>
+              <button onClick={logout} className="btn-logout">Sign Out</button>
+            </>
+          ) : (
+            <div className="daily-counter">
+              <span className="counter-label">Free: {DAILY_LIMIT} files/day</span>
             </div>
-            <span className="counter-text">
-              {user?.conversionsUsed || 0}/{user?.maxConversions || 0} conversions
-            </span>
-          </div>
-          
-          <button onClick={logout} className="btn-logout">Sign Out</button>
+          )}
         </div>
       </nav>
 
       {/* Main Content */}
       <main className="main-content">
         <div className="content-grid">
-          {/* Left Column */}
           <div className="column-main">
-            {/* Upgrade Alert */}
-            {user?.plan === 'free' && (user?.remainingConversions || 0) <= 1 && (
+            {/* Daily Limit Alert */}
+            {remainingToday <= 5 && remainingToday > 0 && (
               <div className="upgrade-alert">
                 <div className="alert-content">
                   <span className="alert-icon">⚡</span>
-                  <span>
-                    {(user?.remainingConversions || 0) === 0 
-                      ? "You've used all your free conversions!" 
-                      : `Only ${user?.remainingConversions} conversion left!`}
-                  </span>
+                  <span>Only {remainingToday} conversions left today</span>
                 </div>
-                <button onClick={() => setShowPricing(true)} className="btn-upgrade-sm">
-                  Upgrade to Pro
-                </button>
+              </div>
+            )}
+            
+            {remainingToday <= 0 && (
+              <div className="upgrade-alert" style={{ background: '#FEE2E2', border: '1px solid #FECACA' }}>
+                <div className="alert-content">
+                  <span className="alert-icon">🛑</span>
+                  <span>Daily limit reached. Come back tomorrow for {DAILY_LIMIT} more free conversions!</span>
+                </div>
               </div>
             )}
 
             {/* Upload Section */}
             <div className="upload-section">
-              <h2 className="section-title">Convert File to PDF</h2>
+              <h2 className="section-title">📁 Convert File to PDF</h2>
+              <p className="section-subtitle">Free • No signup required to convert • {DAILY_LIMIT} files per day</p>
               
               <div 
                 {...getRootProps()} 
-                className={`dropzone ${isDragActive ? 'dropzone-active' : ''} ${converting ? 'dropzone-converting' : ''}`}
+                className={`dropzone ${isDragActive ? 'dropzone-active' : ''} ${converting ? 'dropzone-converting' : ''} ${remainingToday <= 0 ? 'dropzone-disabled' : ''}`}
               >
-                <input {...getInputProps()} />
+                <input {...getInputProps()} disabled={remainingToday <= 0} />
                 
                 {converting ? (
                   <div className="dropzone-content">
@@ -431,177 +387,171 @@ function App() {
                       <span>DOC</span><span>DOCX</span><span>XLS</span><span>XLSX</span>
                       <span>JPG</span><span>PNG</span><span>TXT</span><span>HTML</span>
                     </div>
-                    <p className="file-size-limit">Maximum file size: 50MB</p>
+                    <p className="file-size-limit">Max 50MB • {remainingToday} conversions left today</p>
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Message Display */}
+            {/* Messages */}
             {message && (
               <div className={`message message-${message.type}`}>
-                {message.type === 'upgrade' && (
-                  <button onClick={() => setShowPricing(true)} className="btn-upgrade-inline">
-                    Upgrade Now - ${PRO_PRICE}/month
+                <span>{message.text}</span>
+                {message.type === 'success' && !token && (
+                  <button onClick={() => setShowAuthModal(true)} className="btn-auth-action">
+                    Sign Up to Download
                   </button>
                 )}
-                <span>{message.text}</span>
               </div>
             )}
 
-            {/* History Section */}
-            <div className="history-section">
-              <h2 className="section-title">Recent Conversions</h2>
-              
-              {history.length === 0 ? (
-                <div className="empty-state">
-                  <p>No files converted yet</p>
-                  <p className="empty-subtext">Upload a file to get started!</p>
-                </div>
-              ) : (
-                <div className="history-list">
-                  {history.map((file) => (
-                    <div key={file.id} className="history-item">
-                      <div className="file-icon">📄</div>
-                      <div className="file-info">
-                        <p className="file-name">{file.original_name}</p>
-                        <p className="file-meta">
-                          {new Date(file.converted_at).toLocaleDateString('en-US', {
-                            month: 'short', day: 'numeric', year: 'numeric',
-                            hour: '2-digit', minute: '2-digit'
-                          })}
-                          {file.file_size && ` • ${(file.file_size / 1024).toFixed(1)} KB`}
-                        </p>
+            {/* History (only for logged in users) */}
+            {token && user && (
+              <div className="history-section">
+                <h2 className="section-title">Your Recent Files</h2>
+                {history.length === 0 ? (
+                  <div className="empty-state">
+                    <p>No files converted yet</p>
+                    <p className="empty-subtext">Upload a file to get started!</p>
+                  </div>
+                ) : (
+                  <div className="history-list">
+                    {history.map((file) => (
+                      <div key={file.id} className="history-item">
+                        <div className="file-icon">📄</div>
+                        <div className="file-info">
+                          <p className="file-name">{file.original_name}</p>
+                          <p className="file-meta">
+                            {new Date(file.converted_at).toLocaleDateString('en-US', {
+                              month: 'short', day: 'numeric', year: 'numeric',
+                              hour: '2-digit', minute: '2-digit'
+                            })}
+                            {file.file_size && ` • ${(file.file_size / 1024).toFixed(1)} KB`}
+                          </p>
+                        </div>
+                        <div className="file-actions">
+                          <button onClick={() => downloadFile(file.converted_path)} className="btn-icon" title="Download">⬇️</button>
+                          <button onClick={() => deleteFile(file.converted_path)} className="btn-icon" title="Delete">🗑️</button>
+                        </div>
                       </div>
-                      <div className="file-actions">
-                        <button onClick={() => downloadFile(file.converted_path)} className="btn-icon" title="Download">⬇️</button>
-                        <button onClick={() => deleteFile(file.converted_path)} className="btn-icon" title="Delete">🗑️</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* Right Column - Plan Info */}
+          {/* Right Sidebar */}
           <div className="column-side">
-            <div className="plan-card">
-              <h3 className="plan-card-title">Your Plan</h3>
-              
-              <div className="current-plan">
-                <span className={`plan-badge plan-${user?.plan || 'free'}`}>
-                  {user?.plan === 'pro' ? 'Pro Plan' : 'Free Tier'}
-                </span>
-                <p className="plan-price">
-                  {user?.plan === 'pro' ? `$${PRO_PRICE}` : '$0'}<span>/month</span>
-                </p>
+            <div className="info-card">
+              <h3>🆓 It's Free!</h3>
+              <p style={{ fontSize: '14px', color: '#666', marginBottom: '15px' }}>
+                Convert up to <strong>{DAILY_LIMIT} files</strong> per day for free. No credit card required.
+              </p>
+              <div className="info-features">
+                <div className="info-feature">✅ Convert to PDF instantly</div>
+                <div className="info-feature">✅ Multiple formats supported</div>
+                <div className="info-feature">✅ Files up to 50MB</div>
+                <div className="info-feature">✅ {DAILY_LIMIT} files per day</div>
               </div>
-
-              <div className="plan-features">
-                <div className="feature-item">
-                  <span className="feature-icon">✓</span>
-                  <span>{user?.maxConversions || 3} conversions/month</span>
-                </div>
-                <div className="feature-item">
-                  <span className="feature-icon">✓</span>
-                  <span>Files up to 50MB</span>
-                </div>
-                <div className="feature-item">
-                  <span className="feature-icon">✓</span>
-                  <span>Multiple formats supported</span>
-                </div>
-                <div className="feature-item">
-                  <span className="feature-icon">{user?.plan === 'pro' ? '✓' : '—'}</span>
-                  <span>Priority processing</span>
-                </div>
-                <div className="feature-item">
-                  <span className="feature-icon">{user?.plan === 'pro' ? '✓' : '—'}</span>
-                  <span>Advanced formatting</span>
-                </div>
-              </div>
-
-              {user?.plan !== 'pro' && (
-                <button onClick={() => setShowPricing(true)} className="btn-upgrade-full">
-                  Upgrade to Pro - ${PRO_PRICE}/month
-                </button>
-              )}
             </div>
-
-            {user?.plan !== 'pro' && (
-              <div className="why-upgrade-card">
-                <h3>Why Go Pro?</h3>
-                <ul>
-                  <li>🚀 Unlimited file conversions</li>
-                  <li>⚡ Lightning fast processing</li>
-                  <li>📊 Better formatting retention</li>
-                  <li>🔒 Secure file handling</li>
-                  <li>📧 Priority email support</li>
-                </ul>
-              </div>
-            )}
+            
+            <div className="how-it-works-card">
+              <h3>How It Works</h3>
+              <ol style={{ paddingLeft: '20px', color: '#666', lineHeight: '2' }}>
+                <li>📤 Upload your file</li>
+                <li>🔄 We convert it to PDF</li>
+                <li>📧 Enter your email to verify</li>
+                <li>🔢 Enter the 6-digit code</li>
+                <li>⬇️ Download your PDF!</li>
+              </ol>
+            </div>
           </div>
         </div>
       </main>
 
-      {/* Pricing Modal */}
-      {showPricing && (
-        <div className="modal-overlay" onClick={() => setShowPricing(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setShowPricing(false)}>✕</button>
+      {/* Auth Modal */}
+      {showAuthModal && (
+        <div className="modal-overlay" onClick={(e) => { if (e.target.className === 'modal-overlay') setShowAuthModal(false); }}>
+          <div className="auth-modal">
+            <button className="modal-close" onClick={() => setShowAuthModal(false)}>✕</button>
             
-            <div className="pricing-header">
-              <h2>Upgrade to {APP_NAME} Pro</h2>
-              <p>Get unlimited file conversions and premium features</p>
+            <div className="auth-header">
+              <span className="auth-icon">📄</span>
+              <h2>{authStep === 'email' ? 'Sign Up to Download' : 'Verify Your Email'}</h2>
+              <p>Enter your email to access your converted file</p>
             </div>
 
-            <div className="pricing-grid">
-              <div className="pricing-card pricing-free">
-                <h3>Free</h3>
-                <p className="price">$0</p>
-                <p className="price-period">forever</p>
-                <ul>
-                  <li>✓ {FREE_LIMIT} conversions/month</li>
-                  <li>✓ Basic PDF conversion</li>
-                  <li>✓ Up to 50MB files</li>
-                  <li>✓ Standard processing</li>
-                </ul>
-                <button className="btn-disabled" disabled>Current Plan</button>
+            {message && authStep === 'otp' && (
+              <div className={`message message-${message.type}`}>
+                {message.text}
               </div>
+            )}
 
-              <div className="pricing-card pricing-pro">
-                <div className="popular-badge">Most Popular</div>
-                <h3>Pro</h3>
-                <p className="price">${PRO_PRICE}</p>
-                <p className="price-period">per month</p>
-                <ul>
-                  <li>✓ Unlimited conversions</li>
-                  <li>✓ Advanced PDF formatting</li>
-                  <li>✓ Up to 50MB files</li>
-                  <li>✓ Priority processing</li>
-                  <li>✓ Email support</li>
-                  <li>✓ No watermarks</li>
-                </ul>
-                <button 
-                  onClick={() => {
-                    alert('Payment system coming soon! For now, this is a demo.');
-                    setShowPricing(false);
-                  }} 
-                  className="btn-primary"
-                >
-                  Coming Soon
+            {authStep === 'email' ? (
+              <form onSubmit={handleSendOTP} className="auth-form">
+                <div className="input-group">
+                  <label>Email Address</label>
+                  <input
+                    type="email"
+                    placeholder="you@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    autoFocus
+                  />
+                </div>
+                <button type="submit" className="btn-primary" disabled={loading}>
+                  {loading ? 'Sending Code...' : 'Send Verification Code'}
                 </button>
-                <p className="secure-note">🔒 Payments temporarily disabled for setup</p>
-              </div>
-            </div>
+                <p style={{ fontSize: '12px', color: '#999', textAlign: 'center', marginTop: '10px' }}>
+                  We'll send a 6-digit code to verify your email
+                </p>
+              </form>
+            ) : (
+              <form onSubmit={handleVerifyOTP} className="auth-form">
+                <p style={{ textAlign: 'center', color: '#666', marginBottom: '20px', fontSize: '14px' }}>
+                  Enter the 6-digit code sent to <strong>{email}</strong>
+                </p>
+                
+                <div className="otp-inputs">
+                  {[0, 1, 2, 3, 4, 5].map((index) => (
+                    <input
+                      key={index}
+                      ref={(el) => otpInputRefs.current[index] = el}
+                      type="text"
+                      maxLength="1"
+                      className="otp-input"
+                      value={otp[index] || ''}
+                      onChange={(e) => handleOtpChange(index, e.target.value)}
+                      onKeyDown={(e) => handleOtpKeyDown(index, e)}
+                      autoFocus={index === 0}
+                    />
+                  ))}
+                </div>
+
+                <button type="submit" className="btn-primary" disabled={loading || otp.length !== 6}>
+                  {loading ? 'Verifying...' : 'Verify & Download'}
+                </button>
+
+                <div className="auth-links">
+                  <button onClick={handleSendOTP} className="btn-link" disabled={loading}>
+                    Resend Code
+                  </button>
+                  <button onClick={() => { setAuthStep('email'); setOtp(''); }} className="btn-link">
+                    Change Email
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}
 
       {/* Footer */}
       <footer className="footer">
-        <p>&copy; 2024 {APP_NAME}. All rights reserved.</p>
-        <p className="footer-tagline">Convert any file to PDF, instantly.</p>
+        <p>&copy; 2024 {APP_NAME} • Free File to PDF Converter</p>
+        <p className="footer-tagline">{DAILY_LIMIT} free conversions per day, every day.</p>
       </footer>
     </div>
   );
