@@ -9,8 +9,7 @@ const PDFDocument = require('pdfkit');
 const mammoth = require('mammoth');
 const sharp = require('sharp');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
-const axios = require('axios');
+const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -21,6 +20,17 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// ─── EMAIL SETUP ───────────────────────────────────────
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+  port: process.env.EMAIL_PORT || 587,
+  secure: false,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
 // ─── MIDDLEWARE ────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
@@ -30,7 +40,7 @@ app.use('/converted', express.static('converted'));
 const auth = async (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
-    if (!token) return res.status(401).json({ error: 'Please login to continue' });
+    if (!token) return res.status(401).json({ error: 'Please login to download files' });
     
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
@@ -65,13 +75,9 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = [
-      '.doc', '.docx', '.xls', '.xlsx', 
-      '.jpg', '.jpeg', '.png', '.gif', '.webp',
-      '.txt', '.html', '.htm', '.rtf', '.odt'
-    ];
+    const allowed = ['.doc', '.docx', '.xls', '.xlsx', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.txt', '.html', '.htm', '.rtf', '.odt'];
     const ext = path.extname(file.originalname).toLowerCase();
     if (allowed.includes(ext)) {
       cb(null, true);
@@ -81,409 +87,151 @@ const upload = multer({
   }
 });
 
-// Create directories if they don't exist
 ['uploads', 'converted'].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// ─── PADDLE CONFIGURATION ──────────────────────────────
-const PADDLE_API_KEY = process.env.PADDLE_API_KEY;
-const PADDLE_API_URL = process.env.PADDLE_API_KEY?.includes('test') 
-  ? 'https://sandbox-api.paddle.com' 
-  : 'https://api.paddle.com';
+// ─── CONSTANTS ─────────────────────────────────────────
+const DAILY_LIMIT = 20;
+const OTP_EXPIRY_MINUTES = 10;
 
-// Monthly file conversion limits
-const FREE_TIER_LIMIT = 3;     // Free users get 3 conversions
-const PRO_TIER_LIMIT = 1000;   // Unlimited (set high number)
+// ─── HELPER FUNCTIONS ──────────────────────────────────
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
 
-// ─── AUTH ROUTES ───────────────────────────────────────
+async function sendOTPEmail(email, otp) {
+  const mailOptions = {
+    from: process.env.EMAIL_FROM,
+    to: email,
+    subject: 'ConvertX - Your Verification Code',
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 30px; background: #f9fafb;">
+        <div style="text-align: center; margin-bottom: 30px;">
+          <h1 style="color: #4A90E2; margin: 0;">📄 ConvertX</h1>
+        </div>
+        <div style="background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h2 style="color: #333; margin-top: 0;">Verify Your Email</h2>
+          <p style="color: #666; font-size: 16px;">Use this code to verify your email and download your converted files:</p>
+          <div style="background: #EBF3FC; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 36px; font-weight: bold; color: #4A90E2; letter-spacing: 8px;">${otp}</span>
+          </div>
+          <p style="color: #999; font-size: 14px;">This code expires in ${OTP_EXPIRY_MINUTES} minutes.</p>
+          <p style="color: #999; font-size: 14px;">If you didn't request this, you can safely ignore this email.</p>
+        </div>
+      </div>
+    `
+  };
 
-// Register
-app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { email, password, name } = req.body;
-    
-    // Validate input
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
-    
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
-    }
-    
-    // Check existing user
-    const { data: existingUser } = await supabase
-      .from('users')
-      .select('email')
-      .eq('email', email.toLowerCase().trim())
-      .single();
-    
-    if (existingUser) {
-      return res.status(400).json({ error: 'An account with this email already exists' });
-    }
-    
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 12);
-    
-    // Create user
-    const { data: user, error } = await supabase
-      .from('users')
-      .insert([{
-        email: email.toLowerCase().trim(),
-        password: hashedPassword,
-        name: name || email.split('@')[0],
-        plan: 'free',
-        max_conversions: FREE_TIER_LIMIT,
-        conversions_this_month: 0,
-        subscription_status: 'inactive',
-        created_at: new Date().toISOString()
-      }])
-      .select()
-      .single();
-    
-    if (error) throw error;
-    
-    // Generate token
-    const token = jwt.sign(
-      { userId: user.id }, 
-      process.env.JWT_SECRET, 
-      { expiresIn: '30d' }
-    );
-    
-    res.status(201).json({
-      success: true,
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        plan: user.plan,
-        conversionsUsed: user.conversions_this_month,
-        maxConversions: user.max_conversions,
-        subscriptionStatus: user.subscription_status
-      }
-    });
-  } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({ error: 'Registration failed. Please try again.' });
-  }
-});
+  await transporter.sendMail(mailOptions);
+}
 
-// Login
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
-    
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', email.toLowerCase().trim())
-      .single();
-    
-    if (error || !user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-    
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-    
-    const token = jwt.sign(
-      { userId: user.id }, 
-      process.env.JWT_SECRET, 
-      { expiresIn: '30d' }
-    );
-    
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        plan: user.plan,
-        conversionsUsed: user.conversions_this_month,
-        maxConversions: user.max_conversions,
-        subscriptionStatus: user.subscription_status
-      }
-    });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Login failed. Please try again.' });
-  }
-});
+async function checkDailyLimit(email) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
-// ─── USER ROUTES ───────────────────────────────────────
+  const { count } = await supabase
+    .from('converted_files')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_email', email)
+    .gte('converted_at', today.toISOString());
 
-// Get user profile
-app.get('/api/user/profile', auth, async (req, res) => {
-  res.json({
-    id: req.user.id,
-    email: req.user.email,
-    name: req.user.name,
-    plan: req.user.plan,
-    conversionsUsed: req.user.conversions_this_month,
-    maxConversions: req.user.max_conversions,
-    subscriptionStatus: req.user.subscription_status,
-    remainingConversions: req.user.max_conversions - req.user.conversions_this_month
-  });
-});
+  return count || 0;
+}
 
-// ─── PADDLE PAYMENT ROUTES ─────────────────────────────
-
-// Create checkout session
-app.post('/api/payment/create-checkout', auth, async (req, res) => {
-  try {
-    const priceId = process.env.PADDLE_PRO_PRICE_ID;
-    
-    const response = await axios.post(
-      `${PADDLE_API_URL}/transactions`,
-      {
-        items: [{
-          priceId: priceId,
-          quantity: 1
-        }],
-        customerId: req.user.paddle_customer_id || undefined,
-        customData: {
-          userId: req.user.id
-        }
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${PADDLE_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    
-    res.json({
-      success: true,
-      checkoutUrl: response.data.data.checkout.url
-    });
-  } catch (error) {
-    console.error('Checkout error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Failed to create checkout session' });
-  }
-});
-
-// Get subscription status
-app.get('/api/payment/subscription', auth, async (req, res) => {
-  res.json({
-    plan: req.user.plan,
-    status: req.user.subscription_status,
-    conversionsUsed: req.user.conversions_this_month,
-    maxConversions: req.user.max_conversions
-  });
-});
-
-// Paddle webhook
-app.post('/api/payment/webhook', async (req, res) => {
-  try {
-    let event;
-    
-    // Handle raw body
-    if (typeof req.body === 'string') {
-      event = JSON.parse(req.body);
-    } else {
-      event = req.body;
-    }
-    
-    console.log('📥 Webhook received:', event?.eventType || 'unknown');
-    
-    if (!event || !event.eventType) {
-      console.error('Invalid webhook payload:', event);
-      return res.status(400).json({ error: 'Invalid payload' });
-    }
-    
-    switch (event.eventType) {
-      case 'transaction.completed': {
-        const userId = event.data?.customData?.userId;
-        const customerId = event.data?.customerId;
-        
-        console.log('💰 Transaction completed for user:', userId);
-        
-        if (!userId) {
-          console.error('No userId in webhook data');
-          break;
-        }
-        
-        // Update user to Pro in Supabase
-        const { data, error } = await supabase
-          .from('users')
-          .update({
-            plan: 'pro',
-            max_conversions: 1000,
-            subscription_status: 'active',
-            paddle_customer_id: customerId,
-            subscription_id: event.data?.subscriptionId,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', userId)
-          .select();
-        
-        if (error) {
-          console.error('❌ Database update error:', error);
-        } else {
-          console.log('✅ User upgraded to Pro:', userId);
-        }
-        break;
-      }
-      
-      case 'subscription.canceled': {
-        const customerId = event.data?.customerId;
-        console.log('❌ Subscription canceled for:', customerId);
-        
-        const { error } = await supabase
-          .from('users')
-          .update({
-            plan: 'free',
-            max_conversions: 3,
-            subscription_status: 'inactive',
-            updated_at: new Date().toISOString()
-          })
-          .eq('paddle_customer_id', customerId);
-        
-        if (error) {
-          console.error('Cancel update error:', error);
-        }
-        break;
-      }
-    }
-    
-    res.json({ received: true });
-  } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).json({ error: 'Webhook processing failed' });
-  }
-});
-// ─── FILE CONVERSION ROUTES ────────────────────────────
-
-// Convert file to PDF
-app.post('/api/convert/to-pdf', auth, upload.single('file'), async (req, res) => {
+// ─── CONVERT FILE (NO LOGIN REQUIRED) ──────────────────
+app.post('/api/convert', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'Please select a file to convert' });
     }
-    
-    // Check conversion limit
-    if (req.user.conversions_this_month >= req.user.max_conversions) {
-      return res.status(403).json({
-        error: 'Monthly conversion limit reached',
-        needsUpgrade: req.user.plan === 'free',
-        message: req.user.plan === 'free' 
-          ? 'You\'ve used all 3 free conversions. Upgrade to Pro for unlimited conversions!'
-          : 'Your monthly limit has been reached.'
+
+    // Store user email from header (optional for conversion)
+    const userEmail = req.header('X-User-Email') || 'guest';
+
+    // Check daily limit
+    const dailyCount = await checkDailyLimit(userEmail);
+    if (dailyCount >= DAILY_LIMIT) {
+      // Clean up uploaded file
+      fs.unlinkSync(req.file.path);
+      return res.status(429).json({
+        error: `Daily limit of ${DAILY_LIMIT} conversions reached. Please try again tomorrow.`,
+        dailyLimitReached: true
       });
     }
-    
+
     const inputPath = req.file.path;
     const outputFilename = uuidv4() + '.pdf';
     const outputPath = path.join('converted', outputFilename);
     const ext = path.extname(req.file.originalname).toLowerCase();
-    
+
     console.log(`🔄 Converting: ${req.file.originalname}`);
-    
+
     // Convert based on file type
     if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext)) {
-      // Image to PDF
       const image = sharp(inputPath);
       const metadata = await image.metadata();
-      
       const doc = new PDFDocument({
         size: [metadata.width || 612, metadata.height || 792],
         margin: 0
       });
-      
       const stream = fs.createWriteStream(outputPath);
       doc.pipe(stream);
-      
-      // Fit image to page while maintaining aspect ratio
       const pageWidth = doc.page.width;
       const pageHeight = doc.page.height;
       let imgWidth = metadata.width;
       let imgHeight = metadata.height;
-      
       if (imgWidth > pageWidth || imgHeight > pageHeight) {
         const ratio = Math.min(pageWidth / imgWidth, pageHeight / imgHeight);
         imgWidth *= ratio;
         imgHeight *= ratio;
       }
-      
       const x = (pageWidth - imgWidth) / 2;
       const y = (pageHeight - imgHeight) / 2;
-      
       doc.image(inputPath, x, y, { width: imgWidth, height: imgHeight });
       doc.end();
-      
       await new Promise((resolve, reject) => {
         stream.on('finish', resolve);
         stream.on('error', reject);
       });
-      
     } else if (['.docx', '.doc'].includes(ext)) {
-      // Word to PDF
       const result = await mammoth.extractRawText({ path: inputPath });
       const doc = new PDFDocument({ margin: 50 });
       const stream = fs.createWriteStream(outputPath);
-      
       doc.pipe(stream);
       doc.fontSize(12);
       doc.font('Helvetica');
-      
-      // Add content with proper formatting
       const paragraphs = result.value.split('\n\n');
       paragraphs.forEach((paragraph, index) => {
         if (paragraph.trim()) {
           if (index > 0) doc.moveDown(0.5);
-          doc.text(paragraph.trim(), {
-            align: 'left',
-            lineGap: 4
-          });
+          doc.text(paragraph.trim(), { align: 'left', lineGap: 4 });
         }
       });
-      
       doc.end();
       await new Promise((resolve, reject) => {
         stream.on('finish', resolve);
         stream.on('error', reject);
       });
-      
     } else if (['.txt', '.html', '.htm'].includes(ext)) {
-      // Text/HTML to PDF
       let content = fs.readFileSync(inputPath, 'utf8');
-      
       if (['.html', '.htm'].includes(ext)) {
         content = content.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
       }
-      
       const doc = new PDFDocument({ margin: 50 });
       const stream = fs.createWriteStream(outputPath);
-      
       doc.pipe(stream);
       doc.fontSize(12);
       doc.font('Helvetica');
-      doc.text(content, {
-        align: 'left',
-        lineGap: 4
-      });
+      doc.text(content, { align: 'left', lineGap: 4 });
       doc.end();
-      
       await new Promise((resolve, reject) => {
         stream.on('finish', resolve);
         stream.on('error', reject);
       });
-      
     } else {
-      // Excel and other formats
       const doc = new PDFDocument({ margin: 50 });
       const stream = fs.createWriteStream(outputPath);
-      
       doc.pipe(stream);
       doc.fontSize(16);
       doc.font('Helvetica-Bold');
@@ -494,184 +242,276 @@ app.post('/api/convert/to-pdf', auth, upload.single('file'), async (req, res) =>
       doc.text(`Original File: ${req.file.originalname}`, { align: 'center' });
       doc.moveDown();
       doc.text('This file has been converted to PDF format.', { align: 'center' });
-      doc.moveDown();
-      doc.text('For advanced formatting options, upgrade to ConvertX Pro!', { 
-        align: 'center',
-        color: '#4A90E2'
-      });
       doc.end();
-      
       await new Promise((resolve, reject) => {
         stream.on('finish', resolve);
         stream.on('error', reject);
       });
     }
-    
-    // Get file size
+
     const fileSize = fs.statSync(outputPath).size;
-    
-    // Update user's conversion count
-    const newConversionCount = req.user.conversions_this_month + 1;
-    
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({
-        conversions_this_month: newConversionCount,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', req.user.id);
-    
-    if (updateError) {
-      console.error('Failed to update conversion count:', updateError);
-    }
-    
-    // Save conversion record
-    const { error: recordError } = await supabase
+
+    // Store conversion record (even for guests)
+    const { data: record } = await supabase
       .from('converted_files')
       .insert([{
-        user_id: req.user.id,
+        user_email: userEmail,
         original_name: req.file.originalname,
         converted_path: outputFilename,
         file_size: fileSize,
         original_type: ext,
+        status: 'pending_download',
         converted_at: new Date().toISOString()
-      }]);
-    
-    if (recordError) {
-      console.error('Failed to save conversion record:', recordError);
-    }
-    
+      }])
+      .select()
+      .single();
+
     // Clean up uploaded file
-    try {
-      fs.unlinkSync(inputPath);
-    } catch (e) {
-      console.error('Failed to delete upload:', e);
-    }
-    
-    const remainingConversions = req.user.max_conversions - newConversionCount;
-    
+    fs.unlinkSync(inputPath);
+
     console.log(`✅ Converted: ${req.file.originalname} → ${outputFilename}`);
-    
+
     res.json({
       success: true,
-      message: 'File converted successfully!',
-      downloadUrl: `/converted/${outputFilename}`,
-      fileName: req.file.originalname,
+      message: 'File converted successfully! Sign up to download.',
+      fileId: record.id,
       convertedFileName: outputFilename,
+      fileName: req.file.originalname,
       fileSize: fileSize,
-      remainingConversions: remainingConversions,
-      totalConversions: newConversionCount
+      requiresAuth: true,
+      dailyCount: dailyCount + 1,
+      dailyLimit: DAILY_LIMIT
     });
-    
+
   } catch (error) {
     console.error('❌ Conversion error:', error);
-    
-    // Clean up on error
     if (req.file && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
-    
-    res.status(500).json({ 
-      error: 'File conversion failed. Please try again.',
-      details: error.message 
-    });
+    res.status(500).json({ error: 'File conversion failed. Please try again.' });
   }
 });
 
-// Download converted file
+// ─── SEND OTP FOR VERIFICATION ─────────────────────────
+app.post('/api/auth/send-otp', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Generate OTP
+    const otp = generateOTP();
+    const otpExpiry = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
+
+    // Check if user exists
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email.toLowerCase().trim())
+      .single();
+
+    if (existingUser) {
+      // Update existing user's OTP
+      await supabase
+        .from('users')
+        .update({
+          otp: otp,
+          otp_expiry: otpExpiry.toISOString(),
+          is_verified: false
+        })
+        .eq('id', existingUser.id);
+    } else {
+      // Create new unverified user
+      await supabase
+        .from('users')
+        .insert([{
+          email: email.toLowerCase().trim(),
+          otp: otp,
+          otp_expiry: otpExpiry.toISOString(),
+          is_verified: false,
+          conversions_today: 0,
+          created_at: new Date().toISOString()
+        }]);
+    }
+
+    // Send OTP email
+    await sendOTPEmail(email, otp);
+
+    console.log(`📧 OTP sent to ${email}: ${otp}`);
+
+    res.json({
+      success: true,
+      message: 'Verification code sent to your email.',
+      email: email
+    });
+
+  } catch (error) {
+    console.error('Send OTP error:', error);
+    res.status(500).json({ error: 'Failed to send verification code. Please try again.' });
+  }
+});
+
+// ─── VERIFY OTP & LOGIN/REGISTER ───────────────────────
+app.post('/api/auth/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ error: 'Email and verification code are required' });
+    }
+
+    // Find user
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email.toLowerCase().trim())
+      .single();
+
+    if (error || !user) {
+      return res.status(400).json({ error: 'No account found. Please request a new code.' });
+    }
+
+    // Check OTP
+    if (user.otp !== otp) {
+      return res.status(400).json({ error: 'Invalid verification code. Please try again.' });
+    }
+
+    // Check OTP expiry
+    if (new Date(user.otp_expiry) < new Date()) {
+      return res.status(400).json({ error: 'Verification code has expired. Please request a new one.' });
+    }
+
+    // Mark user as verified
+    await supabase
+      .from('users')
+      .update({
+        is_verified: true,
+        otp: null,
+        otp_expiry: null,
+        last_login: new Date().toISOString()
+      })
+      .eq('id', user.id);
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    console.log(`✅ User verified: ${email}`);
+
+    res.json({
+      success: true,
+      message: 'Email verified successfully!',
+      token: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        conversionsToday: user.conversions_today || 0,
+        dailyLimit: DAILY_LIMIT
+      }
+    });
+
+  } catch (error) {
+    console.error('Verify OTP error:', error);
+    res.status(500).json({ error: 'Verification failed. Please try again.' });
+  }
+});
+
+// ─── LOGIN WITH EXISTING TOKEN ──────────────────────────
+app.get('/api/user/profile', auth, async (req, res) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const { count } = await supabase
+    .from('converted_files')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_email', req.user.email)
+    .gte('converted_at', today.toISOString());
+
+  res.json({
+    id: req.user.id,
+    email: req.user.email,
+    isVerified: req.user.is_verified,
+    conversionsToday: count || 0,
+    dailyLimit: DAILY_LIMIT,
+    remainingToday: Math.max(0, DAILY_LIMIT - (count || 0))
+  });
+});
+
+// ─── DOWNLOAD FILE (REQUIRES AUTH) ──────────────────────
 app.get('/api/convert/download/:filename', auth, async (req, res) => {
   try {
     const filePath = path.join(__dirname, 'converted', req.params.filename);
-    
-    // Check if file belongs to user
+
+    // Verify file belongs to user
     const { data: fileRecord } = await supabase
       .from('converted_files')
-      .select('user_id')
+      .select('*')
       .eq('converted_path', req.params.filename)
+      .eq('user_email', req.user.email)
       .single();
-    
-    if (!fileRecord || fileRecord.user_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
+
+    if (!fileRecord) {
+      return res.status(403).json({ error: 'Access denied. This file is not yours.' });
     }
-    
+
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' });
+      return res.status(404).json({ error: 'File not found. It may have been deleted.' });
     }
-    
-    res.download(filePath, `converted.pdf`);
+
+    // Update file status
+    await supabase
+      .from('converted_files')
+      .update({ status: 'downloaded' })
+      .eq('id', fileRecord.id);
+
+    // Update user's daily count and assign file to user if not already
+    await supabase
+      .from('converted_files')
+      .update({ user_email: req.user.email })
+      .eq('converted_path', req.params.filename)
+      .is('user_id', null);
+
+    res.download(filePath, `${fileRecord.original_name || 'converted'}.pdf`);
+
   } catch (error) {
     console.error('Download error:', error);
-    res.status(500).json({ error: 'Download failed' });
+    res.status(500).json({ error: 'Download failed. Please try again.' });
   }
 });
 
-// Get conversion history
+// ─── GET USER'S FILE HISTORY ────────────────────────────
 app.get('/api/convert/history', auth, async (req, res) => {
   try {
     const { data: files, error } = await supabase
       .from('converted_files')
       .select('*')
-      .eq('user_id', req.user.id)
+      .eq('user_email', req.user.email)
       .order('converted_at', { ascending: false })
-      .limit(20);
-    
+      .limit(50);
+
     if (error) throw error;
-    
-    res.json({
-      success: true,
-      files: files || []
-    });
+
+    res.json({ success: true, files: files || [] });
   } catch (error) {
     console.error('History error:', error);
     res.status(500).json({ error: 'Failed to load history' });
   }
 });
 
-// Delete converted file
-app.delete('/api/convert/delete/:filename', auth, async (req, res) => {
-  try {
-    const { data: fileRecord } = await supabase
-      .from('converted_files')
-      .select('*')
-      .eq('converted_path', req.params.filename)
-      .eq('user_id', req.user.id)
-      .single();
-    
-    if (!fileRecord) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-    
-    // Delete physical file
-    const filePath = path.join('converted', req.params.filename);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-    
-    // Delete database record
-    await supabase
-      .from('converted_files')
-      .delete()
-      .eq('id', fileRecord.id);
-    
-    res.json({ success: true, message: 'File deleted' });
-  } catch (error) {
-    console.error('Delete error:', error);
-    res.status(500).json({ error: 'Delete failed' });
-  }
-});
-
 // ─── HEALTH CHECK ──────────────────────────────────────
 app.get('/api/health', async (req, res) => {
   try {
-    const { count } = await supabase
-      .from('users')
-      .select('*', { count: 'exact', head: true });
-    
+    const { count } = await supabase.from('users').select('*', { count: 'exact', head: true });
     res.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
       database: 'connected',
-      service: 'ConvertX API v1.0'
+      service: 'ConvertX API v2.0'
     });
   } catch (error) {
     res.status(500).json({ status: 'unhealthy', error: error.message });
@@ -686,7 +526,6 @@ app.use((error, req, res, next) => {
     }
     return res.status(400).json({ error: error.message });
   }
-  
   console.error('Unhandled error:', error);
   res.status(500).json({ error: 'Internal server error' });
 });
@@ -696,8 +535,8 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════╗
-║          ConvertX API Server             ║
-║          Version 1.0.0                   ║
+║          ConvertX API Server v2.0        ║
+║          Free Tier - OTP Auth            ║
 ║          Port: ${PORT}                      ║
 ║          Status: Running                 ║
 ╚══════════════════════════════════════════╝
