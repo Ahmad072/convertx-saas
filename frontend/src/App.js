@@ -6,7 +6,7 @@ import './App.css';
 // ═══════════════════════════════════════════════════════
 // CONFIGURATION
 // ═══════════════════════════════════════════════════════
-const API_URL = 'https://convertx-api.onrender.com'; // CHANGE THIS TO YOUR REAL RENDER URL
+const API_URL = 'https://convertx-saas.onrender.com/'; // CHANGE THIS TO YOUR REAL RENDER URL
 const APP_NAME = 'ConvertX';
 const FREE_LIMIT = 3;
 const PRO_PRICE = 8;
