@@ -6,51 +6,10 @@ import './App.css';
 // ═══════════════════════════════════════════════════════
 // CONFIGURATION
 // ═══════════════════════════════════════════════════════
-const API_URL = 'https://convertx-api.onrender.com'; // Your Render backend URL
+const API_URL = 'https://convertx-api.onrender.com'; // CHANGE THIS TO YOUR REAL RENDER URL
 const APP_NAME = 'ConvertX';
 const FREE_LIMIT = 3;
 const PRO_PRICE = 8;
-
-// Paddle Configuration
-const PADDLE_CLIENT_TOKEN = 'test_79a26ec311dd32a43c53d788bc0'; // REPLACE WITH YOUR SANDBOX CLIENT TOKEN
-const PADDLE_ENVIRONMENT = 'sandbox'; // Change to 'production' for live
-
-// ═══════════════════════════════════════════════════════
-// Initialize Paddle
-// ═══════════════════════════════════════════════════════
-if (window.Paddle) {
-  window.Paddle.Environment.set(PADDLE_ENVIRONMENT);
-  window.Paddle.Initialize({
-    token: PADDLE_CLIENT_TOKEN,
-    checkout: {
-      settings: {
-        displayMode: "overlay",
-        theme: "light",
-        locale: "en",
-        allowLogout: false
-      }
-    },
-    eventCallback: function(data) {
-      console.log("Paddle Event:", data.name, data);
-      
-      // Handle checkout events
-      if (data.name === "checkout.completed") {
-        console.log("✅ Payment successful!");
-        // The webhook will update the database
-        // Refresh user data after a delay
-        setTimeout(() => {
-          window.location.reload();
-        }, 3000);
-      }
-      if (data.name === "checkout.error") {
-        console.error("❌ Payment error:", data);
-      }
-      if (data.name === "checkout.closed") {
-        console.log("Checkout closed by user");
-      }
-    }
-  });
-}
 
 // ═══════════════════════════════════════════════════════
 // MAIN APP COMPONENT
@@ -67,22 +26,8 @@ function App() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showPricing, setShowPricing] = useState(false);
-  const [paddleReady, setPaddleReady] = useState(false);
 
-  // Check if Paddle is loaded
-  useEffect(() => {
-    const checkPaddle = setInterval(() => {
-      if (window.Paddle) {
-        setPaddleReady(true);
-        clearInterval(checkPaddle);
-        console.log("✅ Paddle.js loaded successfully");
-      }
-    }, 1000);
-    
-    return () => clearInterval(checkPaddle);
-  }, []);
-
-  // Load user data
+  // Load user data when token changes
   useEffect(() => {
     if (token) {
       fetchUserProfile();
@@ -90,7 +35,7 @@ function App() {
     }
   }, [token]);
 
-  // Auto-dismiss messages
+  // Auto-dismiss messages after 5 seconds
   useEffect(() => {
     if (message) {
       const timer = setTimeout(() => setMessage(null), 5000);
@@ -108,7 +53,9 @@ function App() {
         headers: { Authorization: `Bearer ${token}` }
       });
       setUser(res.data);
+      console.log('✅ User profile loaded:', res.data);
     } catch (error) {
+      console.error('Profile error:', error);
       if (error.response?.status === 401) {
         logout();
       }
@@ -122,7 +69,7 @@ function App() {
       });
       setHistory(res.data.files || []);
     } catch (error) {
-      console.error('Failed to fetch history');
+      console.error('History error:', error);
     }
   };
 
@@ -137,21 +84,41 @@ function App() {
         ? { email, password }
         : { email, password, name };
 
-      const res = await axios.post(`${API_URL}${endpoint}`, payload);
+      console.log('🔗 Connecting to:', `${API_URL}${endpoint}`);
+      
+      const res = await axios.post(`${API_URL}${endpoint}`, payload, {
+        timeout: 15000 // 15 second timeout
+      });
+      
+      console.log('✅ Auth successful:', res.data);
       
       localStorage.setItem('convertx_token', res.data.token);
       setToken(res.data.token);
       setUser(res.data.user);
-      setMessage({ type: 'success', text: `Welcome to ${APP_NAME}, ${res.data.user.name}!` });
+      setMessage({ type: 'success', text: `Welcome to ${APP_NAME}, ${res.data.user.name || 'User'}!` });
       
       setEmail('');
       setPassword('');
       setName('');
     } catch (error) {
-      setMessage({ 
-        type: 'error', 
-        text: error.response?.data?.error || 'Something went wrong. Please try again.' 
-      });
+      console.error('❌ Auth error:', error);
+      
+      if (error.code === 'ECONNABORTED') {
+        setMessage({ 
+          type: 'error', 
+          text: 'Server is waking up. Please wait 30 seconds and try again.' 
+        });
+      } else if (!error.response) {
+        setMessage({ 
+          type: 'error', 
+          text: 'Cannot connect to server. Please check your internet and try again.' 
+        });
+      } else {
+        setMessage({ 
+          type: 'error', 
+          text: error.response?.data?.error || 'Something went wrong. Please try again.' 
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -166,55 +133,8 @@ function App() {
   };
 
   // ═══════════════════════════════════════════════════
-  // PADDLE CHECKOUT - DIRECT INTEGRATION
+  // FILE OPERATIONS
   // ═══════════════════════════════════════════════════
-
-  const handleUpgrade = async () => {
-    if (!paddleReady) {
-      setMessage({ 
-        type: 'error', 
-        text: 'Payment system is loading. Please wait a moment and try again.' 
-      });
-      return;
-    }
-
-    try {
-      setLoading(true);
-      console.log("🚀 Opening Paddle checkout...");
-      
-      // Open Paddle checkout directly
-      window.Paddle.Checkout.open({
-        items: [
-          {
-            priceId: 'pro_01kpzkmw1grg3ymr7hypwnj155', // REPLACE WITH YOUR SANDBOX PRICE ID
-            quantity: 1
-          }
-        ],
-        customer: {
-          email: user?.email || '',
-        },
-        customData: {
-          userId: user?.id || ''
-        },
-        settings: {
-          displayMode: 'overlay',
-          theme: 'light',
-          locale: 'en',
-          successUrl: window.location.href,
-          closeUrl: window.location.href
-        }
-      });
-      
-    } catch (error) {
-      console.error('Paddle error:', error);
-      setMessage({ 
-        type: 'error', 
-        text: 'Failed to open checkout. Please try again.' 
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const downloadFile = async (filename) => {
     try {
@@ -232,9 +152,9 @@ function App() {
       link.remove();
       window.URL.revokeObjectURL(url);
       
-      setMessage({ type: 'success', text: 'File downloaded successfully!' });
+      setMessage({ type: 'success', text: '✅ File downloaded!' });
     } catch (error) {
-      setMessage({ type: 'error', text: 'Download failed. Please try again.' });
+      setMessage({ type: 'error', text: 'Download failed.' });
     }
   };
 
@@ -244,21 +164,18 @@ function App() {
         headers: { Authorization: `Bearer ${token}` }
       });
       fetchHistory();
-      setMessage({ type: 'success', text: 'File deleted successfully!' });
+      setMessage({ type: 'success', text: 'File deleted!' });
     } catch (error) {
-      setMessage({ type: 'error', text: 'Failed to delete file.' });
+      setMessage({ type: 'error', text: 'Delete failed.' });
     }
   };
-
-  // ═══════════════════════════════════════════════════
-  // FILE DROP HANDLER
-  // ═══════════════════════════════════════════════════
 
   const onDrop = useCallback(async (acceptedFiles) => {
     if (acceptedFiles.length === 0) return;
 
     const file = acceptedFiles[0];
     
+    // Check if user has conversions left
     if (user && user.remainingConversions <= 0) {
       setMessage({
         type: 'upgrade',
@@ -283,17 +200,18 @@ function App() {
       });
 
       setMessage({ type: 'success', text: '✅ File converted successfully!' });
-      fetchUserProfile();
+      fetchUserProfile(); // Refresh user data (conversion count)
       fetchHistory();
 
+      // Auto download the converted file
       if (res.data.convertedFileName) {
         setTimeout(() => downloadFile(res.data.convertedFileName), 500);
       }
     } catch (error) {
-      if (error.response?.status === 403 && error.response?.data?.needsUpgrade) {
+      if (error.response?.status === 403) {
         setMessage({
           type: 'upgrade',
-          text: 'You\'ve reached your monthly limit. Upgrade to Pro for unlimited conversions!'
+          text: 'Monthly limit reached! Upgrade to Pro for unlimited conversions.'
         });
         setShowPricing(true);
       } else {
@@ -328,7 +246,7 @@ function App() {
   });
 
   // ═══════════════════════════════════════════════════
-  // RENDER: LOGIN/REGISTER PAGE
+  // LOGIN/REGISTER PAGE
   // ═══════════════════════════════════════════════════
 
   if (!token) {
@@ -425,7 +343,7 @@ function App() {
   }
 
   // ═══════════════════════════════════════════════════
-  // RENDER: MAIN DASHBOARD
+  // DASHBOARD
   // ═══════════════════════════════════════════════════
 
   return (
@@ -439,23 +357,25 @@ function App() {
         
         <div className="nav-user">
           <div className="user-info">
-            <span className="user-plan-badge">{user?.plan}</span>
+            <span className="user-plan-badge">{user?.plan || 'free'}</span>
             <span className="user-name">{user?.name}</span>
           </div>
+          
           <div className="conversion-counter">
             <div className="counter-bar">
               <div 
                 className="counter-fill"
                 style={{ 
-                  width: `${(user?.conversionsUsed / user?.maxConversions) * 100}%`,
-                  backgroundColor: user?.remainingConversions <= 1 ? '#EF4444' : '#4A90E2'
+                  width: `${((user?.conversionsUsed || 0) / (user?.maxConversions || 1)) * 100}%`,
+                  backgroundColor: (user?.remainingConversions || 0) <= 1 ? '#EF4444' : '#4A90E2'
                 }}
               />
             </div>
             <span className="counter-text">
-              {user?.conversionsUsed}/{user?.maxConversions} conversions
+              {user?.conversionsUsed || 0}/{user?.maxConversions || 0} conversions
             </span>
           </div>
+          
           <button onClick={logout} className="btn-logout">Sign Out</button>
         </div>
       </nav>
@@ -465,12 +385,13 @@ function App() {
         <div className="content-grid">
           {/* Left Column */}
           <div className="column-main">
-            {user?.plan === 'free' && user?.remainingConversions <= 1 && (
+            {/* Upgrade Alert */}
+            {user?.plan === 'free' && (user?.remainingConversions || 0) <= 1 && (
               <div className="upgrade-alert">
                 <div className="alert-content">
                   <span className="alert-icon">⚡</span>
                   <span>
-                    {user?.remainingConversions === 0 
+                    {(user?.remainingConversions || 0) === 0 
                       ? "You've used all your free conversions!" 
                       : `Only ${user?.remainingConversions} conversion left!`}
                   </span>
@@ -481,6 +402,7 @@ function App() {
               </div>
             )}
 
+            {/* Upload Section */}
             <div className="upload-section">
               <h2 className="section-title">Convert File to PDF</h2>
               
@@ -515,6 +437,7 @@ function App() {
               </div>
             </div>
 
+            {/* Message Display */}
             {message && (
               <div className={`message message-${message.type}`}>
                 {message.type === 'upgrade' && (
@@ -526,6 +449,7 @@ function App() {
               </div>
             )}
 
+            {/* History Section */}
             <div className="history-section">
               <h2 className="section-title">Recent Conversions</h2>
               
@@ -560,24 +484,24 @@ function App() {
             </div>
           </div>
 
-          {/* Right Column */}
+          {/* Right Column - Plan Info */}
           <div className="column-side">
             <div className="plan-card">
               <h3 className="plan-card-title">Your Plan</h3>
               
               <div className="current-plan">
-                <span className={`plan-badge plan-${user?.plan}`}>
-                  {user?.plan === 'free' ? 'Free Tier' : 'Pro Plan'}
+                <span className={`plan-badge plan-${user?.plan || 'free'}`}>
+                  {user?.plan === 'pro' ? 'Pro Plan' : 'Free Tier'}
                 </span>
                 <p className="plan-price">
-                  {user?.plan === 'free' ? '$0' : `$${PRO_PRICE}`}<span>/month</span>
+                  {user?.plan === 'pro' ? `$${PRO_PRICE}` : '$0'}<span>/month</span>
                 </p>
               </div>
 
               <div className="plan-features">
                 <div className="feature-item">
                   <span className="feature-icon">✓</span>
-                  <span>{user?.maxConversions} conversions/month</span>
+                  <span>{user?.maxConversions || 3} conversions/month</span>
                 </div>
                 <div className="feature-item">
                   <span className="feature-icon">✓</span>
@@ -597,14 +521,14 @@ function App() {
                 </div>
               </div>
 
-              {user?.plan === 'free' && (
+              {user?.plan !== 'pro' && (
                 <button onClick={() => setShowPricing(true)} className="btn-upgrade-full">
                   Upgrade to Pro - ${PRO_PRICE}/month
                 </button>
               )}
             </div>
 
-            {user?.plan === 'free' && (
+            {user?.plan !== 'pro' && (
               <div className="why-upgrade-card">
                 <h3>Why Go Pro?</h3>
                 <ul>
@@ -629,11 +553,6 @@ function App() {
             <div className="pricing-header">
               <h2>Upgrade to {APP_NAME} Pro</h2>
               <p>Get unlimited file conversions and premium features</p>
-              {!paddleReady && (
-                <p style={{color: 'orange', marginTop: '10px'}}>
-                  ⚠️ Payment system is loading...
-                </p>
-              )}
             </div>
 
             <div className="pricing-grid">
@@ -664,19 +583,22 @@ function App() {
                   <li>✓ No watermarks</li>
                 </ul>
                 <button 
-                  onClick={handleUpgrade} 
+                  onClick={() => {
+                    alert('Payment system coming soon! For now, this is a demo.');
+                    setShowPricing(false);
+                  }} 
                   className="btn-primary"
-                  disabled={loading || !paddleReady}
                 >
-                  {loading ? 'Opening...' : !paddleReady ? 'Loading Payment...' : 'Upgrade Now'}
+                  Coming Soon
                 </button>
-                <p className="secure-note">🔒 Secure payment powered by Paddle</p>
+                <p className="secure-note">🔒 Payments temporarily disabled for setup</p>
               </div>
             </div>
           </div>
         </div>
       )}
 
+      {/* Footer */}
       <footer className="footer">
         <p>&copy; 2024 {APP_NAME}. All rights reserved.</p>
         <p className="footer-tagline">Convert any file to PDF, instantly.</p>
