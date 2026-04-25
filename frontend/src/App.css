@@ -1065,3 +1065,66 @@ body {
   font-weight: 600;
   color: #4A90E2;
 }
+.btn-download {
+  display: inline-block;
+  padding: 14px 30px;
+  background: #10B981;
+  color: white;
+  border-radius: 10px;
+  text-decoration: none;
+  font-size: 18px;
+  font-weight: 700;
+  margin-top: 15px;
+  transition: all 0.2s;
+}
+
+.btn-download:hover {
+  background: #059669;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+.download-card {
+  background: white;
+  border-radius: 12px;
+  padding: 30px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  margin-top: 20px;
+}
+
+.download-card h3 {
+  color: #10B981;
+  margin-bottom: 10px;
+}
+
+.download-card p {
+  color: #666;
+  margin-bottom: 5px;
+}
+
+.nav-badge {
+  background: #10B981;
+  color: white;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 10px;
+}
+
+.section-subtitle {
+  text-align: center;
+  color: #666;
+  margin-bottom: 20px;
+  font-size: 14px;
+}
+
+.counter-label {
+  background: #EBF3FC;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4A90E2;
+}
