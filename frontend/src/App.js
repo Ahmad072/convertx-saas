@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 
-const API_URL = 'https://convertx-saas.onrender.com/'; // CHANGE THIS TO YOUR REAL RENDER URL
+const API_URL = 'https://convertx-saas.onrender.com'; // CHANGE THIS TO YOUR REAL RENDER URL
 const APP_NAME = 'ConvertX';
 
 function App() {
