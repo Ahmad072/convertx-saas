@@ -1,131 +1,180 @@
-import React, { useState, useCallback } from 'react';
-import { useDropzone } from 'react-dropzone';
+import React, { useState } from 'react';
 import axios from 'axios';
-import './App.css';
 
-const API_URL = 'https://convertx-saas.onrender.com/'; // CHANGE THIS!
+const API_URL = 'https://convertx-api-abc123.onrender.com'; // CHANGE THIS TO YOUR REAL RENDER URL
 const APP_NAME = 'ConvertX';
 
 function App() {
+  const [file, setFile] = useState(null);
   const [converting, setConverting] = useState(false);
-  const [message, setMessage] = useState(null);
-  const [lastFile, setLastFile] = useState(null);
+  const [downloadUrl, setDownloadUrl] = useState(null);
+  const [message, setMessage] = useState('');
 
-  const onDrop = useCallback(async (acceptedFiles) => {
-    if (acceptedFiles.length === 0) return;
+  const handleFileChange = (e) => {
+    const selectedFile = e.target.files[0];
+    if (selectedFile) {
+      setFile(selectedFile);
+      setDownloadUrl(null);
+      setMessage('');
+    }
+  };
 
-    const file = acceptedFiles[0];
+  const handleConvert = async () => {
+    if (!file) {
+      setMessage('Please select a file first');
+      return;
+    }
+
     setConverting(true);
-    setMessage(null);
-    setLastFile(null);
+    setMessage('Converting your file...');
 
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-      const res = await axios.post(`${API_URL}/api/convert`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+      const response = await axios.post(`${API_URL}/api/convert`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
       });
 
-      setMessage({ 
-        type: 'success', 
-        text: '✅ File converted successfully!' 
-      });
-      
-      setLastFile({
-        name: res.data.fileName,
-        downloadUrl: `${API_URL}/api/download/${res.data.convertedFileName}`
-      });
-
+      if (response.data && response.data.success) {
+        setMessage('File converted successfully!');
+        setDownloadUrl(`${API_URL}/api/download/${response.data.convertedFileName}`);
+      } else {
+        setMessage('Conversion failed. Please try again.');
+      }
     } catch (error) {
       console.error('Error:', error);
-      setMessage({ 
-        type: 'error', 
-        text: error.response?.data?.error || '❌ Conversion failed. Please try again.' 
-      });
+      setMessage('Conversion failed. Please check your file and try again.');
     } finally {
       setConverting(false);
     }
-  }, []);
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    maxSize: 52428800
-  });
+  };
 
   return (
-    <div className="app-container">
-      {/* Navbar */}
-      <nav className="navbar">
-        <div className="nav-brand">
-          <span className="nav-logo">📄</span>
-          <span className="nav-title">{APP_NAME}</span>
-          <span className="nav-badge">FREE</span>
-        </div>
-        <div className="nav-user">
-          <span className="counter-label">20 files/day</span>
-        </div>
-      </nav>
+    <div style={{
+      maxWidth: '650px',
+      margin: '40px auto',
+      padding: '30px',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      background: 'white',
+      borderRadius: '12px',
+      boxShadow: '0 4px 20px rgba(0,0,0,0.08)'
+    }}>
+      {/* Header */}
+      <div style={{ textAlign: 'center', marginBottom: '30px' }}>
+        <h1 style={{ fontSize: '32px', color: '#4A90E2', margin: '0 0 10px 0' }}>
+          📄 {APP_NAME}
+        </h1>
+        <p style={{ color: '#666', fontSize: '16px', margin: 0 }}>
+          Convert any file to PDF - Free & Easy
+        </p>
+        <p style={{ color: '#999', fontSize: '13px', margin: '5px 0 0 0' }}>
+          No signup required
+        </p>
+      </div>
 
-      {/* Main */}
-      <main className="main-content">
-        <div className="upload-section">
-          <h2 className="section-title">📁 Convert File to PDF</h2>
-          <p className="section-subtitle">Free • No signup required • 20 files per day</p>
-          
-          <div 
-            {...getRootProps()} 
-            className={`dropzone ${isDragActive ? 'dropzone-active' : ''} ${converting ? 'dropzone-converting' : ''}`}
+      {/* Upload Area */}
+      <div style={{
+        border: '2px dashed #D1D5DB',
+        borderRadius: '12px',
+        padding: '40px 20px',
+        textAlign: 'center',
+        background: '#F9FAFB',
+        marginBottom: '20px'
+      }}>
+        <div style={{ fontSize: '48px', marginBottom: '15px' }}>📁</div>
+        
+        <input
+          type="file"
+          onChange={handleFileChange}
+          style={{ marginBottom: '20px', fontSize: '14px' }}
+          accept=".doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.gif,.webp,.txt,.html,.htm,.rtf,.odt"
+        />
+        
+        <br />
+        
+        <button
+          onClick={handleConvert}
+          disabled={converting || !file}
+          style={{
+            padding: '14px 40px',
+            background: converting || !file ? '#D1D5DB' : '#4A90E2',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '18px',
+            fontWeight: '600',
+            cursor: converting || !file ? 'not-allowed' : 'pointer',
+            transition: 'all 0.2s'
+          }}
+        >
+          {converting ? '⏳ Converting...' : '🔄 Convert to PDF'}
+        </button>
+
+        {file && (
+          <p style={{ marginTop: '15px', color: '#666', fontSize: '14px' }}>
+            Selected: {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
+          </p>
+        )}
+      </div>
+
+      {/* Message */}
+      {message && (
+        <div style={{
+          padding: '15px',
+          borderRadius: '8px',
+          textAlign: 'center',
+          fontWeight: '500',
+          marginBottom: '20px',
+          background: message.includes('success') ? '#D1FAE5' : message.includes('failed') ? '#FEE2E2' : '#EBF3FC',
+          color: message.includes('success') ? '#065F46' : message.includes('failed') ? '#991B1B' : '#1E40AF'
+        }}>
+          {message}
+        </div>
+      )}
+
+      {/* Download Button */}
+      {downloadUrl && (
+        <div style={{ textAlign: 'center' }}>
+          <a
+            href={downloadUrl}
+            download
+            style={{
+              display: 'inline-block',
+              padding: '14px 40px',
+              background: '#10B981',
+              color: 'white',
+              textDecoration: 'none',
+              borderRadius: '8px',
+              fontSize: '18px',
+              fontWeight: '600',
+              transition: 'all 0.2s'
+            }}
+            onMouseOver={(e) => e.target.style.background = '#059669'}
+            onMouseOut={(e) => e.target.style.background = '#10B981'}
           >
-            <input {...getInputProps()} />
-            
-            {converting ? (
-              <div className="dropzone-content">
-                <div className="spinner" />
-                <p className="dropzone-text">Converting your file...</p>
-              </div>
-            ) : (
-              <div className="dropzone-content">
-                <div className="dropzone-icon">{isDragActive ? '📂' : '📁'}</div>
-                <p className="dropzone-text">
-                  {isDragActive ? 'Drop your file here' : 'Drag & drop your file here'}
-                </p>
-                <p className="dropzone-subtext">or click to browse</p>
-                <div className="supported-formats">
-                  <span>DOC</span><span>DOCX</span><span>JPG</span><span>PNG</span><span>TXT</span><span>HTML</span>
-                </div>
-                <p className="file-size-limit">Max 50MB</p>
-              </div>
-            )}
-          </div>
+            ⬇️ Download PDF
+          </a>
+          <p style={{ color: '#999', fontSize: '13px', marginTop: '10px' }}>
+            Click to download your converted PDF file
+          </p>
         </div>
+      )}
 
-        {/* Messages */}
-        {message && (
-          <div className={`message message-${message.type}`} style={{ marginTop: '20px' }}>
-            <span>{message.text}</span>
-          </div>
-        )}
-
-        {/* Download Button */}
-        {lastFile && (
-          <div className="download-card">
-            <h3>✅ Ready to Download</h3>
-            <p>{lastFile.name}</p>
-            <a 
-              href={lastFile.downloadUrl}
-              className="btn-download"
-              download
-            >
-              ⬇️ Download PDF
-            </a>
-          </div>
-        )}
-      </main>
-
-      <footer className="footer">
-        <p>&copy; 2024 {APP_NAME} • Free File to PDF Converter</p>
-      </footer>
+      {/* Footer */}
+      <div style={{
+        textAlign: 'center',
+        marginTop: '30px',
+        paddingTop: '20px',
+        borderTop: '1px solid #E5E7EB',
+        color: '#999',
+        fontSize: '13px'
+      }}>
+        <p style={{ margin: 0 }}>{APP_NAME} - Convert any file to PDF instantly</p>
+        <p style={{ margin: '5px 0 0 0' }}>Supports: DOC, DOCX, XLS, XLSX, JPG, PNG, GIF, TXT, HTML</p>
+      </div>
     </div>
   );
 }
